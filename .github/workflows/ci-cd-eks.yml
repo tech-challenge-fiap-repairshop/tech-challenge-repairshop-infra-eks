@@ -2,30 +2,26 @@ name: 🚀 AWS EKS Infrastructure CI/CD Pipeline
 
 on:
   push:
-    branches: [ 'main', 'homolog', 'develop' ]
+    branches: [ 'main', 'homolog', 'dev', 'develop' ]
     paths:
-      - 'dev/**'
-      - 'hml/**'
-      - 'prd/**'
+      - 'infra/**'
       - '.github/workflows/ci-cd-eks.yml'
   pull_request:
-    branches: [ 'main', 'homolog', 'develop' ]
+    branches: [ 'main', 'homolog', 'dev', 'develop' ]
     paths:
-      - 'dev/**'
-      - 'hml/**'
-      - 'prd/**'
+      - 'infra/**'
       - '.github/workflows/ci-cd-eks.yml'
   workflow_dispatch:
     inputs:
       environment:
         description: 'Ambiente de Deploy (prd, dev, hml)'
         required: true
-        default: 'dev'
+        default: 'prd'
         type: choice
         options:
+          - prd
           - dev
           - hml
-          - prd
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -45,6 +41,16 @@ jobs:
       !contains(github.event.pull_request.title, '[skip ci]') &&
       !contains(github.event.pull_request.title, '[ci skip]')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: >-
+      ${{ 
+        github.event.inputs.environment || 
+        (github.base_ref == 'main' && 'prd') || 
+        (github.ref == 'refs/heads/main' && 'prd') || 
+        (github.base_ref == 'homolog' && 'hml') || 
+        (github.ref == 'refs/heads/homolog' && 'hml') || 
+        'dev' 
+      }}
     permissions:
       contents: read
 
@@ -52,7 +58,9 @@ jobs:
       ENV: >-
         ${{ 
           github.event.inputs.environment || 
+          (github.base_ref == 'main' && 'prd') || 
           (github.ref == 'refs/heads/main' && 'prd') || 
+          (github.base_ref == 'homolog' && 'hml') || 
           (github.ref == 'refs/heads/homolog' && 'hml') || 
           'dev' 
         }}
@@ -97,23 +105,67 @@ jobs:
             }'
           fi
 
+      - name: Check Remote Network State Existence
+        id: check_network_state
+        run: |
+          NETWORK_KEY="network/${ENV}.tfstate"
+          BUCKET_NAME="fiap-repairshop2"
+          
+          if aws s3api head-object --bucket "$BUCKET_NAME" --key "$NETWORK_KEY" 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Estado da rede ($NETWORK_KEY) encontrado no bucket $BUCKET_NAME."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Estado da rede ($NETWORK_KEY) NÃO encontrado no bucket $BUCKET_NAME."
+          fi
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.8.5"
 
+      - name: Terraform Format Check
+        run: |
+          cd infra
+          terraform fmt -check
+
       - name: Terraform Init
         run: |
-          cd ${{ env.ENV }}
-          terraform init
+          cd infra
+          terraform init \
+            -backend-config="bucket=fiap-repairshop2" \
+            -backend-config="key=eks/${ENV}.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
 
-      - name: Terraform Plan
+      - name: Terraform Validate / Plan
         run: |
-          cd ${{ env.ENV }}
-          terraform plan
+          cd infra
+          if [ "${{ steps.check_network_state.outputs.exists }}" = "true" ]; then
+            echo "🔍 Executando terraform plan com environments/${ENV}.tfvars..."
+            terraform plan -var-file="environments/${ENV}.tfvars"
+          else
+            echo "::warning::O estado remoto da rede 'network/${ENV}.tfstate' ainda não existe no S3. Executando 'terraform validate' para validação sintática do PR."
+            terraform validate
+          fi
 
-      - name: Terraform Apply
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/homolog' || github.ref == 'refs/heads/develop'))
+      - name: Terraform Apply (Somente na branch main ou disparo manual)
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
         run: |
-          cd ${{ env.ENV }}
-          terraform apply -auto-approve
+          cd infra
+          if [ "${{ steps.check_network_state.outputs.exists }}" != "true" ]; then
+            echo "::error::Não é possível executar o deploy do EKS porque o estado remoto da rede 'network/${ENV}.tfstate' não foi encontrado no S3. Execute o deploy do repositório 'infra-network' para '${ENV}' primeiro!"
+            exit 1
+          fi
+          terraform apply -auto-approve -var-file="environments/${ENV}.tfvars"
+
+      - name: Generate Pipeline Summary
+        if: always()
+        run: |
+          echo "## 🚀 AWS EKS CI/CD Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Parâmetro | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Ambiente Alvo** | \`${{ env.ENV }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Evento** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch / Ref** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Autor** | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status da Execução** | \`${{ job.status }}\` |" >> $GITHUB_STEP_SUMMARY
