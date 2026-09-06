@@ -28,32 +28,51 @@ Este módulo provisiona a camada de computação elástica em nuvem para execuç
 
 ```mermaid
 flowchart TB
+    %% Definições de Estilo
+    classDef cloudStyle fill:#ECEFF1,stroke:#607D8B,stroke-width:2px,color:#263238
+    classDef vpcStyle fill:#F5F7FA,stroke:#0277BD,stroke-width:2px,color:#01579B,stroke-dasharray: 4 4
+    classDef eksStyle fill:#E8EAF6,stroke:#3F51B5,stroke-width:2px,color:#1A237E
+    classDef nodeGroupStyle fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
+    classDef workloadStyle fill:#FFFFFF,stroke:#00ACC1,stroke-width:1.5px,color:#006064
+    classDef sgStyle fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px,color:#B71C1C
+    classDef obsStyle fill:#F3E5F5,stroke:#8E24AA,stroke-width:1.5px,color:#4A148C
+    classDef tagStyle fill:#FFFFFF,stroke:#78909C,stroke-width:1px,stroke-dasharray: 2 2,color:#37474F
+
     subgraph AWS_Cloud["☁️ AWS Cloud"]
-        subgraph VPC["🏢 VPC Privada (Consome infra-network)"]
-            subgraph EKS_Cluster["☸️ Amazon EKS Cluster (repairshop-eks)"]
-                ControlPlane["Control Plane (Gerenciado AWS)"]
+        subgraph VPC["🏢 VPC Privada (VPC do repositório infra-network)"]
+            subgraph EKS_Cluster["☸️ Amazon EKS Cluster — repairshop-eks"]
+                ControlPlane["🧠 Control Plane (Gerenciado pela AWS)"]
                 
-                subgraph NodeGroup["⚙️ Managed Node Group (Subnets Privadas Multi-AZ)"]
+                subgraph NodeGroup["⚙️ Managed Node Group — Subnets Privadas Multi-AZ"]
                     direction TB
-                    Node1["EC2 Worker Node 1\n(t3.medium)"]
-                    Node2["EC2 Worker Node 2\n(t3.medium)"]
+                    TagNodes["🏷️ Instâncias EC2: t3.medium / t3.large (Auto Scaling)"]:::tagStyle
+                    
+                    Node1["💻 Worker Node 1\n(AZ: us-east-1a)"]:::nodeGroupStyle
+                    Node2["💻 Worker Node 2\n(AZ: us-east-1b)"]:::nodeGroupStyle
+                    TagNodes ~~~ Node1
                     
                     subgraph Workloads["📦 Workloads (Namespace: repairshop)"]
-                        AppPods["🚀 App Pods (Spring Boot / Java 24)\nPorta 8080 (HPA: 2 a 10 réplicas)"]
-                        OTelPod["🔭 OpenTelemetry Collector\nPortas 4317 (gRPC) / 4318 (HTTP)"]
-                        ObsPods["📊 Prometheus / Jaeger / Loki"]
+                        direction TB
+                        AppPods["🚀 App Pods (Spring Boot / Java 24)\nPorta 8080 (HPA: 2 a 10 réplicas)"]:::workloadStyle
+                        OTelPod["🔭 OpenTelemetry Collector\nPortas 4317 (gRPC) / 4318 (HTTP)"]:::obsStyle
+                        ObsPods["📊 Stack de Métricas\n(Prometheus / Jaeger / Loki)"]:::obsStyle
+                        
+                        AppPods -->|"Traces & Metrics OTLP"| OTelPod
+                        OTelPod --> ObsPods
                     end
                 end
             end
 
-            SG_EKS["🛡️ Security Group: eks_nodes-sg\n• Ingress: 8080 (App), 4317/4318 (OTel)\n• Egress: Irrestrito na VPC/Internet"]
+            SG_EKS["🛡️ Security Group: eks_nodes-sg\n• Ingress: 8080 (App), 4317/4318 (OTel)\n• Egress: Irrestrito na VPC/Internet"]:::sgStyle
         end
     end
+    class AWS_Cloud cloudStyle
+    class VPC vpcStyle
+    class EKS_Cluster eksStyle
+    class NodeGroup nodeGroupStyle
 
     ControlPlane --- NodeGroup
     NodeGroup --- SG_EKS
-    AppPods -->|"Traces & Metrics OTLP"| OTelPod
-    OTelPod --> ObsPods
 ```
 
 ---
@@ -89,16 +108,25 @@ A esteira de integração e entrega contínua do EKS está configurada em [`.git
 
 ```mermaid
 flowchart TD
-    A["🎯 Trigger (Push/PR branches: main, homolog, dev ou Workflow Dispatch)"] --> B["⚙️ Setup & Auth AWS (Configure AWS Credentials)"]
-    B --> C["📦 S3 State Check (Ensure Bucket fiap-repairshop2)"]
-    C --> D["🌐 Check Remote Network State (network/${ENV}.tfstate)"]
-    D --> E["🔍 Terraform Format Check (terraform fmt -check)"]
-    E --> F["⚡ Terraform Init (S3 Backend: eks/${ENV}.tfstate)"]
-    F --> G["📝 Terraform Plan / Validate"]
-    G --> H{"🌿 Branch é main ou Dispatch Manual?"}
-    H -- "Sim" --> I["🚀 Terraform Apply (-auto-approve)"]
-    H -- "Não (PR / Homolog)" --> J["✅ Relatório Sintático / Plan"]
-    I --> K["📊 GitHub Step Summary (Métricas da Execução)"]
+    classDef triggerStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
+    classDef stepStyle fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
+    classDef gateStyle fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:#F57F17
+    classDef deployStyle fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef reportStyle fill:#ECEFF1,stroke:#455A64,stroke-width:2px,color:#263238
+
+    A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
+    A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
+    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop2)"]:::stepStyle
+    C --> D["🌐 Validação do Estado da Rede\n(Remote State: network/${ENV}.tfstate)"]:::stepStyle
+    D --> E["🔍 Checagem de Formatação\n(terraform fmt -check na pasta infra/)"]:::stepStyle
+    E --> F["⚡ Inicialização do Terraform\n(terraform init com backend S3 eks/${ENV}.tfstate)"]:::stepStyle
+    F --> G["📝 Geração do Plano\n(terraform plan -var-file=environments/${ENV}.tfvars)"]:::stepStyle
+    G --> H{"🌿 Branch é 'main' com Push\nou Dispatch Manual?"}:::gateStyle
+    
+    H -- "✅ Sim (Deploy Aprovado)" --> I["🚀 Terraform Apply\n(terraform apply -auto-approve)"]:::deployStyle
+    H -- "🛡️ Não (PR ou Homologação)" --> J["📋 Modo Dry-Run / Plan Only\n(Validação Sintática e Recursos)"]:::reportStyle
+    
+    I --> K["📊 GitHub Step Summary\n(Status da Execução e Métricas)"]:::reportStyle
     J --> K
 ```
 
@@ -125,6 +153,33 @@ flowchart TD
 > 1. **Otimização de Limite de Minutos do GitHub Actions:** O provisionamento de um cluster Kubernetes gerenciado na AWS leva entre 8 a 15 minutos. Separar em múltiplos jobs exigiria múltiplos warm-ups de runners, esgotando rapidamente a cota mensal de minutos da conta.
 > 2. **Sem Overhead de Caching/Re-download de Providers:** Os binários dos provedores AWS, Kubernetes e Helm permanecem em cache local durante todo o ciclo de vida do job.
 > 3. **Consistência de Variáveis de Sessão:** As credenciais temporárias do AWS CLI e tokens de autenticação do cluster EKS são mantidos no mesmo contexto sem necessidade de reautenticação entre steps.
+
+---
+
+## 🔀 Governança de Branches e Ciclo de Promoção (Git Flow)
+
+A governança do repositório segue isolamento estrito com aprovação controlada para promoção de ambientes:
+
+```mermaid
+flowchart LR
+    classDef branchDev fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px,color:#0D47A1
+    classDef branchHml fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
+    classDef branchMain fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
+    classDef gateStyle fill:#FFEBEE,stroke:#E53935,stroke-width:2px,color:#B71C1C
+
+    Dev["🌿 Feature / Fix / Chore\n(feat/*, fix/*, chore/*)"]:::branchDev
+    PR_HML{"Pull Request\npara homolog"}:::gateStyle
+    HML["🛡️ Branch homolog\n(Ambiente hml / Validação)"]:::branchHml
+    PR_MAIN{"Pull Request\npara main"}:::gateStyle
+    Main["🚀 Branch main\n(Deploy em Produção)"]:::branchMain
+
+    Dev -->|"Abertura de PR"| PR_HML
+    PR_HML -->|"Validação & Merge"| HML
+    HML -->|"Abertura de PR de Promoção"| PR_MAIN
+    PR_MAIN -->|"Aprovação Manual Obrigatória"| Main
+```
+
+> ⚠️ **Regra de Governança:** É expressamente proibido commit ou push direto na branch `main`. Toda alteração deve passar pelo pipeline de validação e aprovação formal.
 
 ---
 
