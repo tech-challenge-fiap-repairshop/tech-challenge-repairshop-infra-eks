@@ -116,7 +116,7 @@ flowchart TD
 
     A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
     A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
-    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop2)"]:::stepStyle
+    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop-{ACCOUNT_ID})"]:::stepStyle
     C --> D["🌐 Validação do Estado da Rede\n(Remote State: network/${ENV}.tfstate)"]:::stepStyle
     D --> E["🔍 Checagem de Formatação\n(terraform fmt -check na pasta infra/)"]:::stepStyle
     E --> F["⚡ Inicialização do Terraform\n(terraform init com backend S3 eks/${ENV}.tfstate)"]:::stepStyle
@@ -136,7 +136,7 @@ flowchart TD
 | :--- | :--- | :--- |
 | **1. Checkout repository** | Obtém o código na versão exata do commit. | Garante a reproduzibilidade do provisionamento da infraestrutura. |
 | **2. Configure AWS Credentials** | Autentica via credenciais seguras do GitHub Secrets. | Permite acesso aos recursos do laboratório AWS com permissões do `LabRole`. |
-| **3. Ensure S3 Bucket State** | Valida a presença do bucket S3 `fiap-repairshop2`. | Previne falhas de inicialização do backend remoto de estado. |
+| **3. Ensure S3 Bucket State** | Valida a presença do bucket S3 `fiap-repairshop-{ACCOUNT_ID}`. | Previne falhas de inicialização do backend remoto de estado. |
 | **4. Check Remote Network State** | Verifica se o arquivo `network/${ENV}.tfstate` existe no S3. | Garante a dependência arquitetural: o EKS só pode ser provisionado se a VPC e sub-redes já existirem. |
 | **5. Setup Terraform** | Instala a versão `1.8.5` do Terraform. | Garante paridade de ambiente de execução com a infraestrutura de rede. |
 | **6. Terraform Format Check** | Executa validação de lint e formatação HCL. | Mantém o padrão de estilo e legibilidade do código de infraestrutura. |
@@ -178,7 +178,7 @@ Para que a pipeline de CI/CD execute o provisionamento do cluster EKS e dos Node
 | Variável / Parâmetro | Origem / Localização | Valor Padrão | Descrição |
 | :--- | :--- | :--- | :--- |
 | `AWS_REGION` | Pipeline `env` / Terraform | `us-east-1` | Região da AWS para deploy do cluster Kubernetes. |
-| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop2` | Bucket S3 para armazenamento do estado `eks/${ENV}.tfstate`. |
+| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop-{ACCOUNT_ID}` | Bucket S3 para armazenamento do estado `eks/${ENV}.tfstate`. |
 | `CLUSTER_NAME` | `environments/*.tfvars` | `repairshop-eks` | Nome do cluster EKS e prefixo dos Managed Node Groups. |
 | `EKS_NODE_INSTANCE_TYPE` | `environments/*.tfvars` | `t3.medium` | Tipo de instância EC2 para os worker nodes do cluster. |
 
@@ -221,7 +221,7 @@ cd infra
 
 # 2. Inicialize o backend remoto S3
 terraform init \
-  -backend-config="bucket=fiap-repairshop2" \
+  -backend-config="bucket=fiap-repairshop-{ACCOUNT_ID}" \
   -backend-config="key=eks/dev.tfstate" \
   -backend-config="region=us-east-1"
 

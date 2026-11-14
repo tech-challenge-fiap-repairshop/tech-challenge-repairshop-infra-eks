@@ -25,7 +25,6 @@ variable "eks_node_instance_type" {
 variable "s3_tfstate_bucket" {
   description = "Nome do bucket S3 onde está armazenado o tfstate de rede"
   type        = string
-  default     = "fiap-repairshop2"
 }
 
 variable "remote_state_network_key" {
