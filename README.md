@@ -1,254 +1,122 @@
-# ☸️ RepairShop — Infraestrutura Kubernetes (AWS EKS)
+# ☸️🚀 Repair Shop — Infra Cluster EKS (`infra-eks`)
 
-[![Terraform](https://img.shields.io/badge/Terraform-1.8.5+-844FBA?logo=terraform&logoColor=white)](https://www.terraform.io/)
-[![AWS EKS](https://img.shields.io/badge/AWS-Amazon%20EKS-FF9900?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/eks/)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.30+-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
-[![Helm](https://img.shields.io/badge/Helm-3.x-0F1689?logo=helm&logoColor=white)](https://helm.sh/)
-[![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
+[![CI/CD Pipeline](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-eks/actions/workflows/ci-cd-eks.yml/badge.svg)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-eks/actions/workflows/ci-cd-eks.yml)
+[![Terraform](https://img.shields.io/badge/Terraform-1.8.5-7B42BC?logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![Amazon EKS](https://img.shields.io/badge/Amazon%20EKS-Kubernetes%201.31-FF9900?logo=amazoneks&logoColor=white)](https://aws.amazon.com/eks/)
 
-Repositório de **Infraestrutura como Código (IaC)** responsável pelo provisionamento do **Cluster Kubernetes Gerenciado (AWS EKS)**, **Managed Node Groups**, controladores essenciais e **Security Groups de Workloads** do projeto **RepairShop** (FIAP Tech Challenge — Fase 3).
+Repositório de **Infraestrutura como Código (Terraform + Helm)** que provisiona o cluster gerenciado **Amazon EKS (Kubernetes 1.31)** da plataforma **Repair Shop (Tech Challenge FIAP — 15SOAT)** em sub-redes privadas, incluindo **Node Group escalável**, regras de Security Group para microsserviços e **OpenTelemetry** (`4317`/`4318`), e o **Metrics Server** instalado via Helm para habilitar **Horizontal Pod Autoscaler (HPA)**.
 
 ---
 
-## 🎯 Propósito e Escopo Arquitetural
+## 📋 Índice
 
-Este módulo provisiona a camada de computação elástica em nuvem para execução dos microsserviços da aplicação e da stack de observabilidade OpenTelemetry:
-
-- **EKS Control Plane Gerenciado:** Alta disponibilidade gerenciada pela AWS através de múltiplas Zonas de Disponibilidade (Multi-AZ).
-- **Managed Node Groups em Sub-redes Privadas:** Worker Nodes EC2 provisionados estritamente nas sub-redes privadas da VPC para impedir qualquer exposição indevida à internet pública.
-- **Security Groups Descentralizados (`aws_security_group.eks_nodes`):**
-  - Porta `8080`: Tráfego HTTP da aplicação principal roteado via Load Balancer / API Gateway.
-  - Portas `4317` (gRPC) e `4318` (HTTP): Ingestão de métricas e traces pelo OpenTelemetry Collector Gateway.
-- **Integração com IAM LabRole (AWS Academy):** Configuração segura de roles de execução de nós e pods.
-- **Evolução Multi-Ambiente:** Parametrização via `environments/dev.tfvars`, `hml.tfvars` e `prd.tfvars`.
+- [Recursos Provisionados no Cluster](#recursos-provisionados-no-cluster)
+- [Arquitetura Atual — Motivação e Benefícios dos Componentes](#arquitetura-atual--motivação-e-benefícios-dos-componentes)
+- [Por que DynamoDB em vez de Banco Relacional nos Workloads do EKS?](#por-que-dynamodb-em-vez-de-banco-relacional-nos-workloads-do-eks)
+- [Como Executar e Validar Localmente (Terraform)](#como-executar-e-validar-localmente-terraform)
+- [Como Executar em Produção (Esteira CI/CD GitHub Actions)](#como-executar-em-produção-esteira-cicd-github-actions)
+- [Documentação Técnica e Collection do Postman](#documentação-técnica-e-collection-do-postman)
 
 ---
 
-## 🏗️ Topologia da Arquitetura do Cluster EKS
+## Recursos Provisionados no Cluster
 
-```mermaid
-flowchart TB
-    %% Definições de Estilo
-    classDef cloudStyle fill:#ECEFF1,stroke:#607D8B,stroke-width:2px,color:#263238
-    classDef vpcStyle fill:#F5F7FA,stroke:#0277BD,stroke-width:2px,color:#01579B,stroke-dasharray: 4 4
-    classDef eksStyle fill:#E8EAF6,stroke:#3F51B5,stroke-width:2px,color:#1A237E
-    classDef nodeGroupStyle fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
-    classDef workloadStyle fill:#FFFFFF,stroke:#00ACC1,stroke-width:1.5px,color:#006064
-    classDef sgStyle fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px,color:#B71C1C
-    classDef obsStyle fill:#F3E5F5,stroke:#8E24AA,stroke-width:1.5px,color:#4A148C
-    classDef tagStyle fill:#FFFFFF,stroke:#78909C,stroke-width:1px,stroke-dasharray: 2 2,color:#37474F
+Conforme definido em [`infra/main.tf`](infra/main.tf) e `infra/environments/{dev,hml,prd}.tfvars`:
 
-    subgraph AWS_Cloud["☁️ AWS Cloud"]
-        subgraph VPC["🏢 VPC Privada (VPC do repositório infra-network)"]
-            subgraph EKS_Cluster["☸️ Amazon EKS Cluster — repairshop-eks"]
-                ControlPlane["🧠 Control Plane (Gerenciado pela AWS)"]
-                
-                subgraph NodeGroup["⚙️ Managed Node Group — Subnets Privadas Multi-AZ"]
-                    direction TB
-                    TagNodes["🏷️ Instâncias EC2: t3.medium / t3.large (Auto Scaling)"]:::tagStyle
-                    
-                    Node1["💻 Worker Node 1\n(AZ: us-east-1a)"]:::nodeGroupStyle
-                    Node2["💻 Worker Node 2\n(AZ: us-east-1b)"]:::nodeGroupStyle
-                    TagNodes ~~~ Node1
-                    
-                    subgraph Workloads["📦 Workloads (Namespace: repairshop)"]
-                        direction TB
-                        AppPods["🚀 App Pods (Spring Boot / Java 24)\nPorta 8080 (HPA: 2 a 10 réplicas)"]:::workloadStyle
-                        OTelPod["🔭 OpenTelemetry Collector\nPortas 4317 (gRPC) / 4318 (HTTP)"]:::obsStyle
-                        ObsPods["📊 Stack de Métricas\n(Prometheus / Jaeger / Loki)"]:::obsStyle
-                        
-                        AppPods -->|"Traces & Metrics OTLP"| OTelPod
-                        OTelPod --> ObsPods
-                    end
-                end
-            end
-
-            SG_EKS["🛡️ Security Group: eks_nodes-sg\n• Ingress: 8080 (App), 4317/4318 (OTel)\n• Egress: Irrestrito na VPC/Internet"]:::sgStyle
-        end
-    end
-    class AWS_Cloud cloudStyle
-    class VPC vpcStyle
-    class EKS_Cluster eksStyle
-    class NodeGroup nodeGroupStyle
-
-    ControlPlane --- NodeGroup
-    NodeGroup --- SG_EKS
-```
-
----
-
-## 🗂️ Estrutura de Arquivos
-
-```text
-.
-├── .github/workflows/
-│   ├── ci-cd-eks.yml         # Pipeline principal de CI/CD (Build, Test & Deploy EKS)
-│   └── destroy.yml           # Pipeline de destruição controlada com Safety Gate
-├── infra/
-│   ├── main.tf               # Cluster EKS, Node Groups, Security Groups e Remote State
-│   ├── variables.tf          # Definição de instâncias, capacidade de nós e variáveis
-│   ├── outputs.tf            # Export de Cluster Name, Endpoint, CA e SG ID
-│   ├── providers.tf          # Configuração dos provedores AWS, Kubernetes e Helm
-│   ├── versions.tf           # Versões mínimas requeridas de Terraform e Provedores
-│   ├── backend.tf            # Configuração do backend remoto S3
-│   └── environments/
-│       ├── dev.tfvars        # Parâmetros de Desenvolvimento (1-2 nós t3.medium)
-│       ├── hml.tfvars        # Parâmetros de Homologação (2 nós t3.medium)
-│       └── prd.tfvars        # Parâmetros de Produção (2-4 nós t3.large)
-└── README.md
-```
-
----
-
-## 🚀 Pipeline de CI/CD (GitHub Actions)
-
-A esteira de integração e entrega contínua do EKS está configurada em [`.github/workflows/ci-cd-eks.yml`](.github/workflows/ci-cd-eks.yml).
-
-### Desenho da Pipeline CI/CD
-
-```mermaid
-flowchart TD
-    classDef triggerStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:2px,color:#01579B
-    classDef stepStyle fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
-    classDef gateStyle fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:#F57F17
-    classDef deployStyle fill:#E8F5E9,stroke:#388E3C,stroke-width:2px,color:#1B5E20
-    classDef reportStyle fill:#ECEFF1,stroke:#455A64,stroke-width:2px,color:#263238
-
-    A["🎯 Disparo / Trigger\n• Push ou PR (main, homolog, dev)\n• Workflow Dispatch Manual"]:::triggerStyle
-    A --> B["⚙️ Autenticação AWS\n(Configure AWS Credentials / IAM LabRole)"]:::stepStyle
-    B --> C["📦 Garantia do Bucket S3\n(Verifica/Cria fiap-repairshop-{ACCOUNT_ID})"]:::stepStyle
-    C --> D["🌐 Validação do Estado da Rede\n(Remote State: network/${ENV}.tfstate)"]:::stepStyle
-    D --> E["🔍 Checagem de Formatação\n(terraform fmt -check na pasta infra/)"]:::stepStyle
-    E --> F["⚡ Inicialização do Terraform\n(terraform init com backend S3 eks/${ENV}.tfstate)"]:::stepStyle
-    F --> G["📝 Geração do Plano\n(terraform plan -var-file=environments/${ENV}.tfvars)"]:::stepStyle
-    G --> H{"🌿 Branch é 'main' com Push\nou Dispatch Manual?"}:::gateStyle
-    
-    H -- "✅ Sim (Deploy Aprovado)" --> I["🚀 Terraform Apply\n(terraform apply -auto-approve)"]:::deployStyle
-    H -- "🛡️ Não (PR ou Homologação)" --> J["📋 Modo Dry-Run / Plan Only\n(Validação Sintática e Recursos)"]:::reportStyle
-    
-    I --> K["📊 GitHub Step Summary\n(Status da Execução e Métricas)"]:::reportStyle
-    J --> K
-```
-
-### Detalhamento e Justificativa de Cada Passo da Pipeline
-
-| Passo | Ação Executada | Justificativa Arquitetural |
+| Componente | Configuração Técnica | Benefício |
 | :--- | :--- | :--- |
-| **1. Checkout repository** | Obtém o código na versão exata do commit. | Garante a reproduzibilidade do provisionamento da infraestrutura. |
-| **2. Configure AWS Credentials** | Autentica via credenciais seguras do GitHub Secrets. | Permite acesso aos recursos do laboratório AWS com permissões do `LabRole`. |
-| **3. Ensure S3 Bucket State** | Valida a presença do bucket S3 `fiap-repairshop-{ACCOUNT_ID}`. | Previne falhas de inicialização do backend remoto de estado. |
-| **4. Check Remote Network State** | Verifica se o arquivo `network/${ENV}.tfstate` existe no S3. | Garante a dependência arquitetural: o EKS só pode ser provisionado se a VPC e sub-redes já existirem. |
-| **5. Setup Terraform** | Instala a versão `1.8.5` do Terraform. | Garante paridade de ambiente de execução com a infraestrutura de rede. |
-| **6. Terraform Format Check** | Executa validação de lint e formatação HCL. | Mantém o padrão de estilo e legibilidade do código de infraestrutura. |
-| **7. Terraform Init** | Inicializa os providers e conecta o estado `eks/${ENV}.tfstate`. | Mantém o estado do EKS totalmente desacoplado do estado da rede e do banco de dados. |
-| **8. Terraform Plan** | Simula a criação/alteração dos recursos do EKS. | Permite auditoria prévia das mudanças sem aplicar efeitos colaterais. |
-| **9. Terraform Apply** | Executa a criação do Cluster EKS e Node Groups na AWS. | Deploy automatizado exclusivo para a branch `main` ou disparo manual aprovado. |
-| **10. Generate Summary** | Publica o resumo da execução no log da pipeline. | Rastreabilidade operacional imediata com detalhes do ambiente e status. |
-
-### 💡 Decisão de Arquitetura: Estratégia de Único Job (Single Job)
-
-> **Decisão Arquitetural:** O workflow foi desenhado com um **único JOB contínuo (`runs-on: ubuntu-latest`)**.
-> 
-> **Motivação Técnica:**
-> 1. **Otimização de Limite de Minutos do GitHub Actions:** O provisionamento de um cluster Kubernetes gerenciado na AWS leva entre 8 a 15 minutos. Separar em múltiplos jobs exigiria múltiplos warm-ups de runners, esgotando rapidamente a cota mensal de minutos da conta.
-> 2. **Sem Overhead de Caching/Re-download de Providers:** Os binários dos provedores AWS, Kubernetes e Helm permanecem em cache local durante todo o ciclo de vida do job.
-> 3. **Consistência de Variáveis de Sessão:** As credenciais temporárias do AWS CLI e tokens de autenticação do cluster EKS são mantidos no mesmo contexto sem necessidade de reautenticação entre steps.
+| **`aws_eks_cluster.eks`** | Kubernetes **`1.31`**, `authentication_mode = "API"`, cluster `repairshop-eks-{env}` nas sub-redes privadas obtidas do state remoto `network/${ENV}.tfstate` | Control plane gerenciado com API de acesso moderna baseada em IAM. |
+| **`aws_eks_node_group.nodes`** | Instâncias **`t3.medium`** em `dev`/`hml`/`prd`, capacidade **`min = 2` / `desired = 2` / `max = 4`**, usando role `LabRole` | Alta disponibilidade distribuída em 2 Zonas de Disponibilidade privadas com escalonamento automático de nós. |
+| **Security Group (`cluster` / `nodes`)** | Regras liberando comunicação nas portas **`8080`** (microsserviços HTTP), **`4317`** (OTel gRPC) e **`4318`** (OTel HTTP) | Isola o plano de dados e permite ingestão transparente de traces, métricas e logs entre pods e OTel Collector. |
+| **Helm Release `metrics-server` (`v3.12.1`)** | Instalado diretamente após provisionamento do cluster | Viabiliza o uso nativo de **HPA (`k8s/hpa.yaml`)** em todos os microsserviços (`register`, `service-order`, `payment`, `notification`). |
 
 ---
 
-### 🔐 Secrets do GitHub Actions (AWS Academy & Deploy)
+## Arquitetura Atual — Motivação e Benefícios dos Componentes
 
-Para que a pipeline de CI/CD execute o provisionamento do cluster EKS e dos Node Groups via Terraform, o repositório requer as seguintes **Actions Secrets** (*Settings > Secrets and variables > Actions*):
-
-> [!TIP]
-> Em contas da **AWS Academy**, as credenciais são temporárias (sessões de 3 a 4 horas). Por essa razão, a inclusão do `AWS_SESSION_TOKEN` é mandatória para autenticação da role `LabRole` e prevenção de falhas de `ExpiredToken`.
-
-| Secret | Obrigatório | Descrição |
-| :--- | :---: | :--- |
-| `AWS_ACCESS_KEY_ID` | **Sim** | Chave de acesso temporária fornecida no console do AWS Academy. |
-| `AWS_SECRET_ACCESS_KEY` | **Sim** | Chave secreta de acesso correspondente. |
-| `AWS_SESSION_TOKEN` | **Sim** | Token da sessão temporária (necessário para o `LabRole`). |
-
-💡 *Dica de Automação:* Utilize o script [`update_aws_secrets.ps1`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-wiki-docs/blob/main/update_aws_secrets.ps1) disponível no repositório `tech-challenge-wiki-docs` para atualizar essas credenciais em todos os 7 repositórios da organização simultaneamente via GitHub CLI.
+| Pilar / Tecnologia | Papel no Ecossistema | Motivação Técnica e Pontos Positivos |
+| :--- | :--- | :--- |
+| **RDS (PostgreSQL 16)** | Persistência relacional do `app-register-service` ([`infra-db-rds`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-db-rds)) | Acessado pelos pods do `register-service` dentro das sub-redes privadas (porta `5432`), preservando **ACID** e chaves estrangeiras para dados cadastrais. |
+| **DynamoDB (NoSQL)** | Persistência dos microsserviços de OS e Pagamentos ([`infra-db-dynamo`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-db-dynamo)) | Evita que o auto-scaling (HPA) dos pods de OS e Pagamentos sature pools de conexões SQL, entregando escala `PAY_PER_REQUEST`, Single-Table Design e GSIs rápidos. |
+| **ElastiCache (Redis 7.0)** | Cache em memória na rede privada ([`infra-redis`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-redis)) | Disponível na porta `6379` para os pods do `register-service` dentro da mesma VPC privada, viabilizando cache sub-milissegundo de sessões/login. |
+| **Apps (EKS + Lambda Auth)** | **Cluster provisionado aqui (EKS `1.31`)** + [`lambda-auth`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-lambda-auth) | Executa os 4 microsserviços Kotlin/Clean Architecture com probes de liveness/readiness, Graceful Shutdown (`30s`) e HPA (`metrics-server`), integrando-se à autenticação serverless no `lambda-auth`. |
+| **Amazon SQS (Mensageria + DLQ)** | Orquestração assíncrona entre pods ([`infra-sqs`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-sqs)) | Permite que os pods produzam e consumam mensagens em 5 filas + 5 DLQs com `SqsListenerHealthIndicator` nas probes do Kubernetes. |
+| **API Gateway (HTTP API v2)** | Borda externa roteando aos NLBs do EKS ([`infra-apigateway`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-infra-apigateway)) | Descobre automaticamente os Network Load Balancers criados pelos Services Kubernetes (`kubernetes.io/service-name`) sem expor os nós worker diretamente à internet. |
+| **Observabilidade (Grafana)** | Pods de **OTel Collector**, **Prometheus**, **Loki**, **Jaeger**, **Grafana** e **Mailpit** | Toda a stack roda no namespace `repairshop` dentro deste cluster, recebendo telemetria das portas `4317`/`4318` e consolidando os **11 dashboards Grafana**. |
 
 ---
 
-### 🌐 Variáveis de Ambiente e Terraform Inputs
+## Por que DynamoDB em vez de Banco Relacional nos Workloads do EKS?
 
-| Variável / Parâmetro | Origem / Localização | Valor Padrão | Descrição |
-| :--- | :--- | :--- | :--- |
-| `AWS_REGION` | Pipeline `env` / Terraform | `us-east-1` | Região da AWS para deploy do cluster Kubernetes. |
-| `S3_TFSTATE_BUCKET` | Backend S3 / Workflow | `fiap-repairshop-{ACCOUNT_ID}` | Bucket S3 para armazenamento do estado `eks/${ENV}.tfstate`. |
-| `CLUSTER_NAME` | `environments/*.tfvars` | `repairshop-eks` | Nome do cluster EKS e prefixo dos Managed Node Groups. |
-| `EKS_NODE_INSTANCE_TYPE` | `environments/*.tfvars` | `t3.medium` | Tipo de instância EC2 para os worker nodes do cluster. |
+Num cluster Kubernetes com **Horizontal Pod Autoscaler (HPA)** ativo, a distinção entre **RDS** (apenas cadastro) e **DynamoDB** (OS e Pagamentos) protege diretamente a estabilidade operacional do EKS:
 
----
-
-## 🔀 Governança de Branches e Ciclo de Promoção (Git Flow)
-
-A governança do repositório segue isolamento estrito com aprovação controlada para promoção de ambientes:
-
-```mermaid
-flowchart LR
-    classDef branchDev fill:#E3F2FD,stroke:#1E88E5,stroke-width:2px,color:#0D47A1
-    classDef branchHml fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
-    classDef branchMain fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
-    classDef gateStyle fill:#FFEBEE,stroke:#E53935,stroke-width:2px,color:#B71C1C
-
-    Dev["🌿 Feature / Fix / Chore\n(feat/*, fix/*, chore/*)"]:::branchDev
-    PR_HML{"Pull Request\npara homolog"}:::gateStyle
-    HML["🛡️ Branch homolog\n(Ambiente hml / Validação)"]:::branchHml
-    PR_MAIN{"Pull Request\npara main"}:::gateStyle
-    Main["🚀 Branch main\n(Deploy em Produção)"]:::branchMain
-
-    Dev -->|"Abertura de PR"| PR_HML
-    PR_HML -->|"Validação & Merge"| HML
-    HML -->|"Abertura de PR de Promoção"| PR_MAIN
-    PR_MAIN -->|"Aprovação Manual Obrigatória"| Main
-```
-
-> ⚠️ **Regra de Governança:** É expressamente proibido commit ou push direto na branch `main`. Toda alteração deve passar pelo pipeline de validação e aprovação formal.
+1. **Prevenção de *Connection Pool Exhaustion***: Quando o HPA multiplica réplicas de `service-order` e `payment` sob picos de tráfego (validados com **Locust** em `docs/delivery/hpa_stress/`), cada pod abriria novas conexões JDBC caso usasse PostgreSQL, derrubando uma instância `db.t3.micro`. O DynamoDB responde via HTTPS *stateless* sem manter conexões abertas.
+2. **Agregados polimórficos e leitura direta sem `JOIN`s**: Ordens de Serviço (`ORDER#<id>`) e Faturamentos (`BILLING#<id>`) consolidam múltiplos sub-documentos sob Single-Table Design com transações atômicas (`TransactWriteItems`), evitando gargalos de I/O relacional e *locks* de schema (`ALTER TABLE`).
+3. **Consultas assíncronas via GSIs dedicados**: Os pods consultam pendências de pagamento e notificação usando `pending-dispatch-index` e `dispatch-notification-index` com latência previsível.
 
 ---
 
-## 💻 Execução e Deploy Local (Terraform CLI)
+## Como Executar e Validar Localmente (Terraform)
 
-Para provisionar ou inspecionar o cluster localmente:
+> **Pré-requisitos**: **Terraform `1.8.5`**, **AWS CLI v2**, **`kubectl`**, **Helm 3** e state prévio da VPC em `network/${ENV}.tfstate`.
 
 ```bash
-# 1. Navegue até a pasta de infraestrutura
 cd infra
 
-# 2. Inicialize o backend remoto S3
+# Inicializar com state remoto no S3 (ex.: dev)
 terraform init \
-  -backend-config="bucket=fiap-repairshop-{ACCOUNT_ID}" \
+  -backend-config="bucket=SEU_BUCKET_TERRAFORM_STATE" \
   -backend-config="key=eks/dev.tfstate" \
   -backend-config="region=us-east-1"
 
-# 3. Formate e valide o código
-terraform fmt -check
+terraform fmt -check -recursive
 terraform validate
-
-# 4. Planeje a execução
 terraform plan -var-file="environments/dev.tfvars"
+```
 
-# 5. Aplique as modificações
-terraform apply -var-file="environments/dev.tfvars"
-
-# 6. Atualize o kubeconfig local para acessar o cluster via kubectl
+Após o cluster existir na AWS, conecte seu `kubectl` local:
+```bash
 aws eks update-kubeconfig --region us-east-1 --name repairshop-eks-dev
 kubectl get nodes
+kubectl get pods -n repairshop
 ```
+
+> *Dica*: Para simular os manifestos Kubernetes localmente na sua estação (Docker Desktop Kubernetes ou Kind), consulte a pasta `local/` no repositório [`tech-challenge-repairshop-app`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app).
 
 ---
 
-## 🔗 Links e Integrações no Ecossistema
+## Como Executar em Produção (Esteira CI/CD GitHub Actions)
 
-- **Documentação Swagger UI da Aplicação:** [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
-- **Coleção Postman:** [`tech-challenge-repairshop-app/docs/postman/`](file:///c:/Users/Alexandre-AGAMIN/Projetos-%20FIAP/github-organizations-projects/tech-challenge-repairshop-app/docs/postman/)
-- **Repositórios Relacionados:**
-  - [`tech-challenge-repairshop-infra-network`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-infra-network) (Fornece VPC e Subnets Privadas)
-  - [`tech-challenge-repairshop-infra-db-rds`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-infra-db-rds) (Banco de Dados PostgreSQL)
-  - [`tech-challenge-repairshop-infra-apigateway`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-infra-apigateway) (Roteador de Entrada / Proxy)
-  - [`tech-challenge-repairshop-lambda-auth`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-lambda-auth) (Autenticação Serverless)
-  - [`tech-challenge-repairshop-app`](https://github.com/fiap-postech-repairshop/tech-challenge-repairshop-app) (Manifestos K8s e Código-Fonte da Aplicação)
+Definida em [`.github/workflows/ci-cd-eks.yml`](.github/workflows/ci-cd-eks.yml) e destruição controlada em [`.github/workflows/destroy.yml`](.github/workflows/destroy.yml).
+
+### Mapeamento de Ambientes
+- `develop` -> **`dev`** (`infra/environments/dev.tfvars`)
+- `homolog` -> **`hml`** (`infra/environments/hml.tfvars`)
+- `main` -> **`prd`** (`infra/environments/prd.tfvars`)
+
+### Etapas da Esteira
+1. `terraform fmt -check` e `terraform validate`.
+2. `terraform init` apontando para o state `eks/${ENV}.tfstate` no bucket `AWS_TERRAFORM_STATE_BUCKET`.
+3. `terraform plan -var-file="environments/${ENV}.tfvars"`.
+4. `terraform apply -auto-approve` em push para `develop`, `homolog` e `main`, provisionando EKS, Node Group e `metrics-server` via Helm.
+
+> **Posição na Ordem Oficial de Provisionamento**: Executado **após `infra-network`** e **antes do deploy dos 4 microsserviços EKS** (`app-register-service`, `app-service-order-execution-service`, `app-payment-service`, `app-notification-service`).
+
+---
+
+## Documentação Técnica e Collection do Postman
+
+- **Arquivos Terraform deste Repositório**: [`infra/main.tf`](infra/main.tf) | [`infra/environments/dev.tfvars`](infra/environments/dev.tfvars) | [`infra/environments/hml.tfvars`](infra/environments/hml.tfvars) | [`infra/environments/prd.tfvars`](infra/environments/prd.tfvars)
+- **Manifestos K8s & Teste de Carga HPA**:
+  - [Manifestos Kubernetes + Observabilidade (`app-service-order-execution-service/k8s`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/tree/main/k8s)
+  - [Teste de Carga HPA com Locust (`locustfile.py`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/delivery/hpa_stress/locustfile.py)
+- **ADRs, RFCs e Diagramas**:
+  - [ADRs (`ADR-001` a `ADR-013`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/ADRs/README.md)
+  - [RFCs (`RFC-001` a `RFC-014`)](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/RFCs/README.md)
+  - [`Diagrama de Infraestrutura Cloud`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/delivery/infrastructure/repairshop-diagrama-infra-cloud.svg)
+- **Postman Collections & Environments (Organização)**:
+  - Collection Principal: [`Repair Shop (Tech Challenge FIAP)`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Repair%20Shop%20%28Tech%20Challenge%20FIAP%29.postman_collection.json)
+  - Collection Completa: [`Tech Challenge FIAP - Completo`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Tech_Challenge_Fiap_-_Completo.postman_collection.json)
+  - Environment Local: [`Local.postman_environment.json`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/Local.postman_environment.json)
+  - Guia do Postman: [`docs/postman/README.md`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/blob/main/docs/postman/README.md)
+- **Dashboards Grafana (11 JSONs)**: [`dashboards/`](https://github.com/tech-challenge-fiap-repairshop/tech-challenge-repairshop-app-service-order-execution-service/tree/main/local/observability/grafana/dashboards)
